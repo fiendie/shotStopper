@@ -21,6 +21,7 @@
 
 */
 
+#include <WiFiManager.h>
 #include <AcaiaArduinoBLE.h>
 #include <NimBLEDevice.h>
 #include "Config.h"
@@ -182,7 +183,7 @@ void setup() {
 
     // Load target time and shot duration limits from brew.target_time
     targetTime = static_cast<float>(config.get<int>("brew.target_time"));
-    
+
     if (const ConfigDef* targetTimeDef = config.getConfigDef("brew.target_time")) {
         minShotDuration = static_cast<float>(targetTimeDef->minValue);
         maxShotDuration = static_cast<float>(targetTimeDef->maxValue);
