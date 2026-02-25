@@ -21,6 +21,7 @@
 
 */
 
+#include <ArduinoOTA.h>
 #include <WiFiManager.h>
 #include <AcaiaArduinoBLE.h>
 #include <NimBLEDevice.h>
@@ -85,7 +86,7 @@ int COLOR_WHITE[3] = {255, 255, 255};
 int COLOR_OFF[3] = {0, 0, 0};
 int currentColor[3] = {-1, -1, -1};
 
-AcaiaArduinoBLE scale(false);
+AcaiaArduinoBLE* scale = nullptr;
 float currentWeight = 0;
 float goalWeight = 0;
 float weightOffset = 0;
@@ -120,7 +121,8 @@ float lastReadWeight = 0;
 NimBLEServer* pServer = nullptr;
 NimBLECharacteristic* pWeightCharacteristic = nullptr;
 bool deviceConnected = false;
-uint8_t lastWrittenWeight = 0;
+volatile bool weightWritten = false;
+volatile uint8_t lastWrittenWeight = 0;
 
 // Callback class for BLE server connection events
 class ServerCallbacks : public NimBLEServerCallbacks {
@@ -144,6 +146,7 @@ class CharacteristicCallbacks : public NimBLECharacteristicCallbacks {
     void onWrite(NimBLECharacteristic* pCharacteristic, NimBLEConnInfo& connInfo) override {
         if (const std::string value = pCharacteristic->getValue(); !value.empty()) {
             lastWrittenWeight = static_cast<uint8_t>(value[0]);
+            weightWritten = true;
         }
     }
 };
@@ -154,6 +157,7 @@ void updateLEDState();
 void setBrewingState(bool brewing);
 float seconds_f();
 void calculateEndTime(Shot* s);
+void setupBLEServer();
 
 void setup() {
     Serial.begin(115200);
@@ -199,6 +203,10 @@ void setup() {
     int logLevelValue = config.get<int>("system.log_level");
     Logger::setLevel(static_cast<Logger::Level>(logLevelValue));
 
+    // Initialize scale with debug flag based on log level (TRACE=0, DEBUG=1)
+    bool scaleDebug = logLevelValue <= 1;
+    scale = new AcaiaArduinoBLE(scaleDebug);
+
     LOG(INFO, "Configuration loaded:");
     LOGF(INFO, "  Goal Weight: %.1fg", goalWeight);
     LOGF(INFO, "  Weight Offset: %.1fg", weightOffset);
@@ -214,6 +222,7 @@ void setup() {
     LOGF(INFO, "  Auto Tare: %s", autoTare ? "true" : "false");
     LOGF(INFO, "  Brew By Time Only: %s", brewByTimeOnly ? "true" : "false");
     LOGF(INFO, "  Log Level: %d", logLevelValue);
+    LOGF(INFO, "  Scale Debug: %s", scaleDebug ? "true" : "false");
 
     // Initialize the GPIO hardware
     pinMode(in, INPUT_PULLUP);
@@ -226,38 +235,73 @@ void setup() {
     // Initialize the BLE hardware using NimBLE
     NimBLEDevice::init("shotStopper");
 
+    // Create BLE Server for companion app communication
+    setupBLEServer();
+
+    LOG(INFO, "Bluetooth® device active, waiting for connections...");
+}
+
+void setupBLEServer() {
+    // Full 128-bit UUIDs
+    static const char* SERVICE_UUID = "00000000-0000-0000-0000-000000000ffe";
+    static const char* WEIGHT_CHAR_UUID = "00000000-0000-0000-0000-00000000ff11";
+
     // Create BLE Server
     pServer = NimBLEDevice::createServer();
+
+    if (!pServer) {
+        LOG(ERROR, "Failed to create BLE server!");
+        return;
+    }
     static ServerCallbacks serverCallbacks;
     pServer->setCallbacks(&serverCallbacks);
 
     // Create BLE Service
-    NimBLEService* pService = pServer->createService("0FFE");
+    NimBLEService* pService = pServer->createService(SERVICE_UUID);
+
+    if (!pService) {
+        LOG(ERROR, "Failed to create BLE service!");
+        return;
+    }
 
     // Create BLE Characteristic
-    pWeightCharacteristic = pService->createCharacteristic("FF11", READ | WRITE);
+    pWeightCharacteristic = pService->createCharacteristic(WEIGHT_CHAR_UUID, READ | WRITE);
+
+    if (!pWeightCharacteristic) {
+        LOG(ERROR, "Failed to create BLE characteristic!");
+        return;
+    }
     static CharacteristicCallbacks characteristicCallbacks;
     pWeightCharacteristic->setCallbacks(&characteristicCallbacks);
     const auto initWeight = static_cast<uint8_t>(goalWeight);
     pWeightCharacteristic->setValue(&initWeight, 1);
 
     // Start the service
-    pService->start();
+    if (!pService->start()) {
+        LOG(ERROR, "Failed to start BLE service!");
+        return;
+    }
 
     // Start advertising
+    // Enable scan response so the name goes into the scan response packet
     NimBLEAdvertising* pAdvertising = NimBLEDevice::getAdvertising();
-    pAdvertising->addServiceUUID("0FFE");
+    pAdvertising->enableScanResponse(true);
+    pAdvertising->addServiceUUID(SERVICE_UUID);
     pAdvertising->setName("shotStopper");
-    pAdvertising->start();
 
-    LOG(INFO, "Bluetooth® device active, waiting for connections...");
+    if (!pAdvertising->start()) {
+        LOG(ERROR, "Failed to start BLE advertising!");
+        return;
+    }
+
+    LOGF(INFO, "BLE server initialized - advertising as 'shotStopper' with service UUID %s", SERVICE_UUID);
 }
 
 void loop() {
     // Update brewByTimeOnly based on scale connection status
     // If configured as false, use time-only mode when scale is disconnected
     if (!brewByTimeOnlyConfigured) {
-        brewByTimeOnly = !scale.isConnected();
+        brewByTimeOnly = !scale->isConnected();
     }
     // If configured as true, always use time-only mode
     else {
@@ -265,10 +309,10 @@ void loop() {
     }
 
     // Connect to scale using non-blocking approach
-    if (!scale.isConnected()) {
+    if (!scale->isConnected()) {
         // Start connection process if not already connecting
-        if (!scale.isConnecting()) {
-            scale.init();
+        if (!scale->isConnecting()) {
+            scale->init();
             currentWeight = 0;
 
             // Only stop brewing if not brewing by time
@@ -280,35 +324,45 @@ void loop() {
         }
 
         // Update connection state machine
-        scale.updateConnection();
+        scale->updateConnection();
+
+        // Detect cleanup by library and re-create the server if necessary
+        if (NimBLEDevice::getServer() == nullptr) {
+            LOG(WARNING, "BLE server destroyed by scale library cleanup, re-creating...");
+            setupBLEServer();
+        }
     }
 
-    // Check for setpoint updates (NimBLE handles this via callbacks)
-    if (lastWrittenWeight != 0 && lastWrittenWeight != static_cast<uint8_t>(goalWeight)) {
-        LOGF(INFO, "Goal weight updated from %.1f to %d", goalWeight, lastWrittenWeight);
-        goalWeight = lastWrittenWeight;
+    // Check for setpoint updates
+    if (weightWritten) {
+        weightWritten = false;
 
-        // Save to config system
-        config.set<double>("brew.goal_weight", goalWeight);
+        if (lastWrittenWeight != static_cast<uint8_t>(goalWeight)) {
+            LOGF(INFO, "Goal weight updated from %.1f to %d", goalWeight, lastWrittenWeight);
+            goalWeight = lastWrittenWeight;
 
-        if (!config.save()) {
-            LOG(ERROR, "Failed to save config after goal weight update");
+            // Save to config system
+            config.set<double>("brew.goal_weight", goalWeight);
+
+            if (!config.save()) {
+                LOG(ERROR, "Failed to save config after goal weight update");
+            }
+
+            // Update the characteristic value
+            const auto newWeight = static_cast<uint8_t>(goalWeight);
+            pWeightCharacteristic->setValue(&newWeight, 1);
         }
-
-        // Update the characteristic value
-        const auto newWeight = static_cast<uint8_t>(goalWeight);
-        pWeightCharacteristic->setValue(&newWeight, 1);
     }
 
     // Send a heartbeat message to the scale periodically to maintain connection
-    if (scale.isConnected() && scale.heartbeatRequired()) {
-        scale.heartbeat();
+    if (scale->isConnected() && scale->heartbeatRequired()) {
+        scale->heartbeat();
     }
 
-    // always call newWeightAvailable to actually receive the datapoint from the scale,
+    // Always call newWeightAvailable to actually receive the datapoint from the scale,
     // otherwise getWeight() will return stale data
-    if (scale.isConnected() && scale.newWeightAvailable()) {
-        currentWeight = scale.getWeight();
+    if (scale->isConnected() && scale->newWeightAvailable()) {
+        currentWeight = scale->getWeight();
 
         if (currentWeight != lastReadWeight) {
             LOGF(DEBUG, "Weight: %.1fg", currentWeight);
@@ -328,7 +382,7 @@ void loop() {
         }
     }
     // Update timer if brewing without scale (Time Mode)
-    else if (shot.brewing && !scale.isConnected()) {
+    else if (shot.brewing && !scale->isConnected()) {
         shot.shotTimer = seconds_f() - shot.start_timestamp_s;
 
         static unsigned long lastTimeModePrint = 0;
@@ -398,7 +452,7 @@ void loop() {
 
         // Get the scale to beep to inform user.
         if (autoTare) {
-            scale.tare();
+            scale->tare();
         }
     }
 
@@ -429,7 +483,7 @@ void loop() {
 
     // Brew by time (Scale disconnected or brew by time only mode)
     else if (shot.brewing
-        && (!scale.isConnected() || brewByTimeOnly)
+        && (!scale->isConnected() || brewByTimeOnly)
         && shot.shotTimer >= targetTime)
     {
         LOGF(INFO, "Target brew time reached: %.1fs", targetTime);
@@ -439,7 +493,7 @@ void loop() {
     }
 
     // End shot by weight (only if not in time-only mode)
-    if (scale.isConnected()
+    if (scale->isConnected()
         && !brewByTimeOnly
         && shot.brewing
         && shot.shotTimer >= shot.expected_end_s
@@ -457,7 +511,7 @@ void loop() {
     // SHOT ANALYSIS  --------------------------------
 
     // Detect error of shot
-    if (scale.isConnected()
+    if (scale->isConnected()
         && static_cast<bool>(shot.start_timestamp_s)
         && static_cast<bool>(shot.end_s)
         && currentWeight >= goalWeight - weightOffset
@@ -498,14 +552,14 @@ void setBrewingState(const bool brewing) {
         shot.datapoints = 0;
         shot.expected_end_s = maxShotDuration; // Initialize to max duration
 
-        if (scale.isConnected()) {
-            scale.resetTimer();
+        if (scale->isConnected()) {
+            scale->resetTimer();
 
             if (autoTare) {
-                scale.tare();
+                scale->tare();
             }
 
-            scale.startTimer();
+            scale->startTimer();
             LOG(DEBUG, "Waiting for weight data...");
         }
         else {
@@ -536,7 +590,7 @@ void setBrewingState(const bool brewing) {
         LOGF(INFO, "Shot ended by %s", endReason);
 
         shot.end_s = seconds_f() - shot.start_timestamp_s;
-        scale.stopTimer();
+        scale->stopTimer();
 
         if (momentary
             && (WEIGHT == shot.end || TIME == shot.end))
@@ -612,15 +666,15 @@ void setColor(int rgb[3]) {
 
 void updateLEDState() {
     if (shot.brewing) {
-        if (scale.isConnected()) {
+        if (scale->isConnected()) {
             setColor(millis() / 1000 % 2 ? COLOR_GREEN : COLOR_BLUE);
         }
         else {
             setColor(millis() / 1000 % 2 ? COLOR_RED : COLOR_BLUE);
         }
     }
-    else if (!scale.isConnected()) {
-        if (scale.isConnecting() && !NimBLEDevice::getScan()->isScanning()) {
+    else if (!scale->isConnected()) {
+        if (scale->isConnecting() && !NimBLEDevice::getScan()->isScanning()) {
             setColor(COLOR_YELLOW);
         }
         else {
