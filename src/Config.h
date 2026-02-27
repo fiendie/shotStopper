@@ -251,6 +251,7 @@ class Config {
             _configDefs.clear();
 
             // System configuration
+            _configDefs.emplace("system.hostname", ConfigDef::forString("shotStopper", 32));
             _configDefs.emplace("system.log_level", ConfigDef::forInt(2, 0, 6)); // Default: INFO (2), Range: TRACE (0) to SILENT (6)
 
             // Switch configuration
@@ -270,6 +271,8 @@ class Config {
             _configDefs.emplace("brew.drip_delay", ConfigDef::forDouble(3.0, 1.0, 10.0));
             _configDefs.emplace("brew.reed_switch_delay", ConfigDef::forDouble(1.0, 0.1, 5.0));
             _configDefs.emplace("brew.target_time", ConfigDef::forInt(30, 3, 60)); // min/max used for shot duration limits
+            _configDefs.emplace("brew.min_shot_duration", ConfigDef::forInt(3, 1, 30));
+            _configDefs.emplace("brew.max_shot_duration", ConfigDef::forInt(60, 10, 120));
         }
 
         /**
@@ -397,6 +400,7 @@ class Config {
 
                 // Validate and apply based on type
                 bool validationSuccess = false;
+
                 switch (def.type) {
                     case ConfigDef::BOOL:
                         {

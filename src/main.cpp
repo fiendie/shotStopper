@@ -21,12 +21,16 @@
 
 */
 
-#include <ArduinoOTA.h>
+#include <WiFi.h>
 #include <WiFiManager.h>
 #include <AcaiaArduinoBLE.h>
 #include <NimBLEDevice.h>
 #include "Config.h"
 #include "Logger.h"
+
+WiFiManager wifiManager;
+
+String hostName;
 
 // Compile-time constants (not configurable)
 #define BUTTON_READ_PERIOD_MS     5     // Button debounce sampling period
@@ -118,35 +122,112 @@ Shot shot = {0.0f, 0.0f, 0.0f, 0.0f, {}, {}, 0, false, UNDEF};
 float lastReadWeight = 0;
 
 // BLE peripheral device (NimBLE server)
+static constexpr uint8_t FIRMWARE_VERSION = 1;
+
 NimBLEServer* pServer = nullptr;
 NimBLECharacteristic* pWeightCharacteristic = nullptr;
+NimBLECharacteristic* pReedSwitchCharacteristic = nullptr;
+NimBLECharacteristic* pMomentaryCharacteristic = nullptr;
+NimBLECharacteristic* pAutoTareCharacteristic = nullptr;
+NimBLECharacteristic* pMinShotDurationCharacteristic = nullptr;
+NimBLECharacteristic* pMaxShotDurationCharacteristic = nullptr;
+NimBLECharacteristic* pDripDelayCharacteristic = nullptr;
+NimBLECharacteristic* pFirmwareVersionCharacteristic = nullptr;
+NimBLECharacteristic* pScaleStatusCharacteristic = nullptr;
+
 bool deviceConnected = false;
-volatile bool weightWritten = false;
-volatile uint8_t lastWrittenWeight = 0;
+bool lastScaleConnected = false; // Track scale state for SCALE_STATUS notifications
+
+volatile bool bleClientConnected = false;
+volatile bool bleClientDisconnected = false;
+
+// Deferred write handling (BLE callbacks run on a different task)
+struct PendingWrite {
+    volatile bool weightDirty;
+    volatile bool reedSwitchDirty;
+    volatile bool momentaryDirty;
+    volatile bool autoTareDirty;
+    volatile bool minShotDurationDirty;
+    volatile bool maxShotDurationDirty;
+    volatile bool dripDelayDirty;
+    volatile uint8_t weight;
+    volatile uint8_t reedSwitchVal;
+    volatile uint8_t momentaryVal;
+    volatile uint8_t autoTareVal;
+    volatile uint8_t minShotDurationVal;
+    volatile uint8_t maxShotDurationVal;
+    volatile uint8_t dripDelayVal;
+};
+PendingWrite pendingWrite = {};
 
 // Callback class for BLE server connection events
 class ServerCallbacks : public NimBLEServerCallbacks {
     void onConnect(NimBLEServer* pServerCallback, NimBLEConnInfo& connInfo) override {
         deviceConnected = true;
-        LOG(INFO, "BLE client connected to shotStopper");
-
-        // Allow multiple connections
+        bleClientConnected = true;
         NimBLEDevice::startAdvertising();
     }
 
     void onDisconnect(NimBLEServer* pServerCallback, NimBLEConnInfo& connInfo, int reason) override {
         deviceConnected = false;
-        LOG(INFO, "BLE client disconnected from shotStopper");
+        bleClientDisconnected = true;
         NimBLEDevice::startAdvertising();
     }
 };
 
 // Callback class for characteristic write events
 class CharacteristicCallbacks : public NimBLECharacteristicCallbacks {
+    enum CharID { CHAR_WEIGHT, CHAR_REED, CHAR_MOMENTARY, CHAR_AUTOTARE,
+                  CHAR_MIN_DUR, CHAR_MAX_DUR, CHAR_DRIP, CHAR_UNKNOWN };
+
+    static CharID identify(const NimBLECharacteristic* pChar) {
+        if (pChar == pWeightCharacteristic)       return CHAR_WEIGHT;
+        if (pChar == pReedSwitchCharacteristic)   return CHAR_REED;
+        if (pChar == pMomentaryCharacteristic)    return CHAR_MOMENTARY;
+        if (pChar == pAutoTareCharacteristic)     return CHAR_AUTOTARE;
+        if (pChar == pMinShotDurationCharacteristic) return CHAR_MIN_DUR;
+        if (pChar == pMaxShotDurationCharacteristic) return CHAR_MAX_DUR;
+        if (pChar == pDripDelayCharacteristic)    return CHAR_DRIP;
+
+        return CHAR_UNKNOWN;
+    }
+
     void onWrite(NimBLECharacteristic* pCharacteristic, NimBLEConnInfo& connInfo) override {
-        if (const std::string value = pCharacteristic->getValue(); !value.empty()) {
-            lastWrittenWeight = static_cast<uint8_t>(value[0]);
-            weightWritten = true;
+        const std::string value = pCharacteristic->getValue();
+        if (value.empty()) return;
+        const auto val = static_cast<uint8_t>(value[0]);
+
+        switch (identify(pCharacteristic)) {
+            case CHAR_WEIGHT:
+                pendingWrite.weight = val;
+                pendingWrite.weightDirty = true;
+                break;
+            case CHAR_REED:
+                pendingWrite.reedSwitchVal = val;
+                pendingWrite.reedSwitchDirty = true;
+                break;
+            case CHAR_MOMENTARY:
+                pendingWrite.momentaryVal = val;
+                pendingWrite.momentaryDirty = true;
+                break;
+            case CHAR_AUTOTARE:
+                pendingWrite.autoTareVal = val;
+                pendingWrite.autoTareDirty = true;
+                break;
+            case CHAR_MIN_DUR:
+                pendingWrite.minShotDurationVal = val;
+                pendingWrite.minShotDurationDirty = true;
+                break;
+            case CHAR_MAX_DUR:
+                pendingWrite.maxShotDurationVal = val;
+                pendingWrite.maxShotDurationDirty = true;
+                break;
+            case CHAR_DRIP:
+                pendingWrite.dripDelayVal = val;
+                pendingWrite.dripDelayDirty = true;
+                break;
+            case CHAR_UNKNOWN:
+                break;
         }
     }
 };
@@ -158,6 +239,8 @@ void setBrewingState(bool brewing);
 float seconds_f();
 void calculateEndTime(Shot* s);
 void setupBLEServer();
+void processPendingBLEWrites();
+void setupWiFi();
 
 void setup() {
     Serial.begin(115200);
@@ -172,6 +255,7 @@ void setup() {
     }
 
     // Load configuration values
+    hostName = config.get<String>("system.hostname");
     goalWeight = static_cast<float>(config.get<double>("brew.goal_weight"));
     weightOffset = static_cast<float>(config.get<double>("brew.weight_offset"));
     maxOffset = static_cast<float>(config.get<double>("brew.max_offset"));
@@ -185,26 +269,17 @@ void setup() {
     brewByTimeOnlyConfigured = config.get<bool>("brew.by_time_only");
     brewByTimeOnly = brewByTimeOnlyConfigured; // Initial value, will be updated based on scale connection
 
-    // Load target time and shot duration limits from brew.target_time
+    // Load target time and shot duration limits
     targetTime = static_cast<float>(config.get<int>("brew.target_time"));
-
-    if (const ConfigDef* targetTimeDef = config.getConfigDef("brew.target_time")) {
-        minShotDuration = static_cast<float>(targetTimeDef->minValue);
-        maxShotDuration = static_cast<float>(targetTimeDef->maxValue);
-    }
-    else {
-        // Fallback to defaults if not found
-        minShotDuration = 3.0f;
-        maxShotDuration = 60.0f;
-        LOG(WARNING, "brew.target_time ConfigDef not found, using defaults");
-    }
+    minShotDuration = static_cast<float>(config.get<int>("brew.min_shot_duration"));
+    maxShotDuration = static_cast<float>(config.get<int>("brew.max_shot_duration"));
 
     // Set log level from config
     int logLevelValue = config.get<int>("system.log_level");
     Logger::setLevel(static_cast<Logger::Level>(logLevelValue));
 
     // Initialize scale with debug flag based on log level (TRACE=0, DEBUG=1)
-    bool scaleDebug = logLevelValue <= 1;
+    const bool scaleDebug = logLevelValue <= 1;
     scale = new AcaiaArduinoBLE(scaleDebug);
 
     LOG(INFO, "Configuration loaded:");
@@ -233,18 +308,28 @@ void setup() {
     setColor(COLOR_OFF);
 
     // Initialize the BLE hardware using NimBLE
-    NimBLEDevice::init("shotStopper");
+    NimBLEDevice::init(hostName.c_str());
 
     // Create BLE Server for companion app communication
     setupBLEServer();
 
     LOG(INFO, "Bluetooth® device active, waiting for connections...");
+
+    setupWiFi();
 }
 
 void setupBLEServer() {
-    // Full 128-bit UUIDs
-    static const char* SERVICE_UUID = "00000000-0000-0000-0000-000000000ffe";
-    static const char* WEIGHT_CHAR_UUID = "00000000-0000-0000-0000-00000000ff11";
+    // Full 128-bit UUIDs matching the companion app
+    static auto SERVICE_UUID             = "00000000-0000-0000-0000-000000000ffe";
+    static auto WEIGHT_CHAR_UUID         = "00000000-0000-0000-0000-00000000ff11";
+    static auto REED_SWITCH_CHAR_UUID    = "00000000-0000-0000-0000-00000000ff12";
+    static auto MOMENTARY_CHAR_UUID      = "00000000-0000-0000-0000-00000000ff13";
+    static auto AUTO_TARE_CHAR_UUID      = "00000000-0000-0000-0000-00000000ff14";
+    static auto MIN_SHOT_DUR_CHAR_UUID   = "00000000-0000-0000-0000-00000000ff15";
+    static auto MAX_SHOT_DUR_CHAR_UUID   = "00000000-0000-0000-0000-00000000ff16";
+    static auto DRIP_DELAY_CHAR_UUID     = "00000000-0000-0000-0000-00000000ff17";
+    static auto FW_VERSION_CHAR_UUID     = "00000000-0000-0000-0000-00000000ff18";
+    static auto SCALE_STATUS_CHAR_UUID   = "00000000-0000-0000-0000-00000000ff19";
 
     // Create BLE Server
     pServer = NimBLEDevice::createServer();
@@ -264,17 +349,56 @@ void setupBLEServer() {
         return;
     }
 
-    // Create BLE Characteristic
-    pWeightCharacteristic = pService->createCharacteristic(WEIGHT_CHAR_UUID, READ | WRITE);
-
-    if (!pWeightCharacteristic) {
-        LOG(ERROR, "Failed to create BLE characteristic!");
-        return;
-    }
     static CharacteristicCallbacks characteristicCallbacks;
-    pWeightCharacteristic->setCallbacks(&characteristicCallbacks);
-    const auto initWeight = static_cast<uint8_t>(goalWeight);
-    pWeightCharacteristic->setValue(&initWeight, 1);
+
+    // Helper to create a R/W characteristic, set initial value, and attach callbacks
+    auto createRWChar = [&](const char* uuid, const uint8_t initVal) -> NimBLECharacteristic* {
+        auto* pChar = pService->createCharacteristic(uuid, READ | WRITE);
+
+        if (pChar) {
+            pChar->setCallbacks(&characteristicCallbacks);
+            pChar->setValue(&initVal, 1);
+        }
+
+        return pChar;
+    };
+
+    // FF11: Weight (R/W)
+    pWeightCharacteristic = createRWChar(WEIGHT_CHAR_UUID, static_cast<uint8_t>(goalWeight));
+
+    // FF12: Reed Switch (R/W, bool as uint8)
+    pReedSwitchCharacteristic = createRWChar(REED_SWITCH_CHAR_UUID, reedSwitch ? 1 : 0);
+
+    // FF13: Momentary (R/W, bool as uint8)
+    pMomentaryCharacteristic = createRWChar(MOMENTARY_CHAR_UUID, momentary ? 1 : 0);
+
+    // FF14: Auto Tare (R/W, bool as uint8)
+    pAutoTareCharacteristic = createRWChar(AUTO_TARE_CHAR_UUID, autoTare ? 1 : 0);
+
+    // FF15: Min Shot Duration (R/W, uint8 seconds)
+    pMinShotDurationCharacteristic = createRWChar(MIN_SHOT_DUR_CHAR_UUID, static_cast<uint8_t>(minShotDuration));
+
+    // FF16: Max Shot Duration (R/W, uint8 seconds)
+    pMaxShotDurationCharacteristic = createRWChar(MAX_SHOT_DUR_CHAR_UUID, static_cast<uint8_t>(maxShotDuration));
+
+    // FF17: Drip Delay (R/W, uint8 seconds)
+    pDripDelayCharacteristic = createRWChar(DRIP_DELAY_CHAR_UUID, static_cast<uint8_t>(dripDelay));
+
+    // FF18: Firmware Version (R only)
+    pFirmwareVersionCharacteristic = pService->createCharacteristic(FW_VERSION_CHAR_UUID, READ);
+
+    if (pFirmwareVersionCharacteristic) {
+        constexpr uint8_t fwVer = FIRMWARE_VERSION;
+        pFirmwareVersionCharacteristic->setValue(&fwVer, 1);
+    }
+
+    // FF19: Scale Status (R + Notify)
+    pScaleStatusCharacteristic = pService->createCharacteristic(SCALE_STATUS_CHAR_UUID, READ | NOTIFY);
+
+    if (pScaleStatusCharacteristic) {
+        const uint8_t scaleStatus = scale && scale->isConnected() ? 1 : 0;
+        pScaleStatusCharacteristic->setValue(&scaleStatus, 1);
+    }
 
     // Start the service
     if (!pService->start()) {
@@ -287,17 +411,19 @@ void setupBLEServer() {
     NimBLEAdvertising* pAdvertising = NimBLEDevice::getAdvertising();
     pAdvertising->enableScanResponse(true);
     pAdvertising->addServiceUUID(SERVICE_UUID);
-    pAdvertising->setName("shotStopper");
+    pAdvertising->setName(hostName.c_str());
 
     if (!pAdvertising->start()) {
         LOG(ERROR, "Failed to start BLE advertising!");
         return;
     }
 
-    LOGF(INFO, "BLE server initialized - advertising as 'shotStopper' with service UUID %s", SERVICE_UUID);
+    LOG(INFO, "BLE server initialized (firmware v1)");
 }
 
 void loop() {
+    wifiManager.process();
+
     // Update brewByTimeOnly based on scale connection status
     // If configured as false, use time-only mode when scale is disconnected
     if (!brewByTimeOnlyConfigured) {
@@ -333,24 +459,30 @@ void loop() {
         }
     }
 
-    // Check for setpoint updates
-    if (weightWritten) {
-        weightWritten = false;
+    // Log BLE client connection events (deferred from NimBLE callback task)
+    if (bleClientConnected) {
+        bleClientConnected = false;
+        LOG(INFO, "BLE client connected to shotStopper");
+    }
 
-        if (lastWrittenWeight != static_cast<uint8_t>(goalWeight)) {
-            LOGF(INFO, "Goal weight updated from %.1f to %d", goalWeight, lastWrittenWeight);
-            goalWeight = lastWrittenWeight;
+    if (bleClientDisconnected) {
+        bleClientDisconnected = false;
+        LOG(INFO, "BLE client disconnected from shotStopper");
+    }
 
-            // Save to config system
-            config.set<double>("brew.goal_weight", goalWeight);
+    // Process any pending BLE characteristic writes from the companion app
+    processPendingBLEWrites();
 
-            if (!config.save()) {
-                LOG(ERROR, "Failed to save config after goal weight update");
-            }
+    // Notify companion app of scale connection status changes
 
-            // Update the characteristic value
-            const auto newWeight = static_cast<uint8_t>(goalWeight);
-            pWeightCharacteristic->setValue(&newWeight, 1);
+    if (const bool scaleConnectedNow = scale->isConnected(); scaleConnectedNow != lastScaleConnected) {
+        lastScaleConnected = scaleConnectedNow;
+
+        if (pScaleStatusCharacteristic) {
+            const uint8_t status = scaleConnectedNow ? 1 : 0;
+            pScaleStatusCharacteristic->setValue(&status, 1);
+            (void)pScaleStatusCharacteristic->notify();
+            LOGF(INFO, "Scale status changed: %s", scaleConnectedNow ? "connected" : "disconnected");
         }
     }
 
@@ -444,7 +576,7 @@ void loop() {
     else if (!momentary
                        && shot.brewing
                        && !buttonLatched
-                       && (shot.shotTimer > minShotDuration)) {
+                       && shot.shotTimer > minShotDuration) {
         buttonLatched = true;
         LOG(INFO, "Button latched");
         digitalWrite(OUT, HIGH);
@@ -544,6 +676,114 @@ void loop() {
     }
 }
 
+void setupWiFi() {
+    // Non-blocking mode: if saved credentials exist, connect in the background.
+    // Otherwise start a captive portal AP for configuration.
+    wifiManager.setConfigPortalBlocking(false);
+    wifiManager.setConfigPortalTimeout(0); // Portal stays open indefinitely until configured
+    wifiManager.setConnectTimeout(10);     // 10s timeout per connection attempt
+
+    if (!wifiManager.autoConnect(hostName.c_str())) {
+        LOGF(INFO, "WiFi not configured - captive portal active on AP: %s", hostName.c_str());
+    }
+    else {
+        LOGF(INFO, "WiFi connected: %s", WiFi.localIP().toString().c_str());
+    }
+}
+
+void processPendingBLEWrites() {
+    bool needsSave = false;
+
+    if (pendingWrite.weightDirty) {
+        pendingWrite.weightDirty = false;
+        const uint8_t val = pendingWrite.weight;
+
+        if (val != static_cast<uint8_t>(goalWeight)) {
+            LOGF(INFO, "BLE: Goal weight updated from %.0f to %d", goalWeight, val);
+            goalWeight = val;
+            config.set<double>("brew.goal_weight", goalWeight);
+            needsSave = true;
+
+            if (pWeightCharacteristic) {
+                pWeightCharacteristic->setValue(&val, 1);
+            }
+        }
+    }
+
+    if (pendingWrite.reedSwitchDirty) {
+        pendingWrite.reedSwitchDirty = false;
+
+        if (const bool val = pendingWrite.reedSwitchVal != 0; val != reedSwitch) {
+            LOGF(INFO, "BLE: Reed switch updated to %s", val ? "true" : "false");
+            reedSwitch = val;
+            in = reedSwitch ? REED_IN : IN;
+            config.set<bool>("switch.reedcontact", reedSwitch);
+            needsSave = true;
+        }
+    }
+
+    if (pendingWrite.momentaryDirty) {
+        pendingWrite.momentaryDirty = false;
+
+        if (const bool val = pendingWrite.momentaryVal != 0; val != momentary) {
+            LOGF(INFO, "BLE: Momentary updated to %s", val ? "true" : "false");
+            momentary = val;
+            config.set<bool>("switch.momentary", momentary);
+            needsSave = true;
+        }
+    }
+
+    if (pendingWrite.autoTareDirty) {
+        pendingWrite.autoTareDirty = false;
+
+        if (const bool val = pendingWrite.autoTareVal != 0; val != autoTare) {
+            LOGF(INFO, "BLE: Auto tare updated to %s", val ? "true" : "false");
+            autoTare = val;
+            config.set<bool>("scale.auto_tare", autoTare);
+            needsSave = true;
+        }
+    }
+
+    if (pendingWrite.minShotDurationDirty) {
+        pendingWrite.minShotDurationDirty = false;
+
+        if (const auto val = static_cast<float>(pendingWrite.minShotDurationVal); val != minShotDuration) {
+            LOGF(INFO, "BLE: Min shot duration updated from %.0f to %.0f", minShotDuration, val);
+            minShotDuration = val;
+            config.set<int>("brew.min_shot_duration", static_cast<int>(minShotDuration));
+            needsSave = true;
+        }
+    }
+
+    if (pendingWrite.maxShotDurationDirty) {
+        pendingWrite.maxShotDurationDirty = false;
+
+        if (const auto val = static_cast<float>(pendingWrite.maxShotDurationVal); val != maxShotDuration) {
+            LOGF(INFO, "BLE: Max shot duration updated from %.0f to %.0f", maxShotDuration, val);
+            maxShotDuration = val;
+            config.set<int>("brew.max_shot_duration", static_cast<int>(maxShotDuration));
+            needsSave = true;
+        }
+    }
+
+    if (pendingWrite.dripDelayDirty) {
+        pendingWrite.dripDelayDirty = false;
+
+        if (const auto val = static_cast<float>(pendingWrite.dripDelayVal); val != dripDelay) {
+            LOGF(INFO, "BLE: Drip delay updated from %.0f to %.0f", dripDelay, val);
+            dripDelay = val;
+            config.set<double>("brew.drip_delay", dripDelay);
+            needsSave = true;
+        }
+    }
+
+    if (needsSave) {
+        if (!config.save()) {
+            LOG(ERROR, "Failed to save config after BLE write");
+        }
+    }
+}
+
 void setBrewingState(const bool brewing) {
     if (brewing) {
         LOG(INFO, "Shot started");
@@ -567,7 +807,7 @@ void setBrewingState(const bool brewing) {
         }
     }
     else {
-        const char* endReason = "unknown";
+        auto endReason = "unknown";
 
         switch (shot.end) {
             case TIME:
@@ -674,12 +914,7 @@ void updateLEDState() {
         }
     }
     else if (!scale->isConnected()) {
-        if (scale->isConnecting() && !NimBLEDevice::getScan()->isScanning()) {
-            setColor(COLOR_YELLOW);
-        }
-        else {
-            setColor(COLOR_RED);
-        }
+        setColor(COLOR_RED);
     }
     else {
         setColor(COLOR_GREEN);

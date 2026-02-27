@@ -12,19 +12,19 @@ This repository uses the forked library maintained by the [CleverCoffee](https:/
 
 The system monitors weight in real-time, applies a linear prediction algorithm to account for post-brew drip, and triggers the machine's brew switch at the calculated moment. When no scale is connected, it falls back to time-based brewing using a configurable target time.
 
-A BLE characteristic allows updating the goal weight remotely using a generic BLE client such as LightBlue.
+A BLE server exposes device settings as characteristics, compatible with the [shotStopper Companion App](https://github.com/icapurro/shotStopperCompanionApp).
 
 ## Features
 
 - Automatic shot termination based on weight prediction
 - Time-based fallback mode when no scale is connected
-- Configurable goal weight via BLE characteristic
+- Companion app support via BLE for reading and writing device settings
 - Reed switch and momentary switch support
 - Auto-tare on shot start
 - Persistent configuration stored on LittleFS
 - Structured logging with configurable log levels
 - Web-based configuration interface (work in progress)
-- WiFi configuration portal (work in progress)
+- WiFi configuration via WiFiManager captive portal
 
 ## Hardware
 
@@ -62,21 +62,28 @@ The system supports scales compatible with the AcaiaArduinoBLE protocol, includi
 
 This is a PlatformIO project. To build and upload:
 
+| Environment    | Description                       |
+|----------------|-----------------------------------|
+| `esp32-c3`     | ESP32-C3, USB serial upload       |
+| `esp32-s3`     | ESP32-S3, USB serial upload       |
+
 ```
 pio run -e esp32-s3 -t upload
 ```
 
-Replace `esp32-s3` with `esp32-c3` for the C3 target.
-
 To upload the LittleFS filesystem image (required for default configuration):
 
 ```
-pio run -e esp32-s3 -t uploadfs
+pio run -e esp32-c3 -t uploadfs
 ```
-
 ## Configuration
 
-Configuration is stored as JSON on the LittleFS filesystem and loaded at startup. Parameters include goal weight, weight offset, brew pulse duration, drip delay, target time, switch type, and logging level. See `Config.h` for the full list of parameters and their defaults.
+Configuration is stored as JSON on the LittleFS filesystem and loaded at startup. Settings can be modified via:
+
+- The [shotStopper Companion App](https://github.com/icapurro/shotStopperCompanionApp) over BLE
+- Editing `config.json` on the LittleFS filesystem
+
+Parameters include goal weight, weight offset, brew pulse duration, drip delay, target time, min/max shot duration, switch type, reed switch mode, auto-tare, OTA hostname, and log level. See `Config.h` for the full list of parameters and their defaults.
 
 ## License
 
