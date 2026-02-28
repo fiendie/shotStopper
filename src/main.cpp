@@ -27,6 +27,8 @@
 #include <NimBLEDevice.h>
 #include "Config.h"
 #include "Logger.h"
+#include "ParameterRegistry.h"
+#include "embeddedWebserver.h"
 
 WiFiManager wifiManager;
 
@@ -56,6 +58,10 @@ bool reedSwitch;
 bool autoTare;
 bool brewByTimeOnly;
 bool brewByTimeOnlyConfigured; // The configured value from config system
+
+// Web-accessible status (updated from shot struct in loop)
+bool isBrewing = false;
+float shotTimer = 0.0f;
 
 // Board Hardware
 #if defined (ARDUINO_ESP32S3_DEV)
@@ -315,7 +321,14 @@ void setup() {
 
     LOG(INFO, "Bluetooth® device active, waiting for connections...");
 
+    // Initialize ParameterRegistry with the config system
+    ParameterRegistry::getInstance().initialize(config);
+    ParameterRegistry::getInstance().syncGlobalVariables();
+
     setupWiFi();
+
+    // Start the embedded web server
+    serverSetup();
 }
 
 void setupBLEServer() {
@@ -423,6 +436,9 @@ void setupBLEServer() {
 
 void loop() {
     wifiManager.process();
+
+    // Process any pending config saves from web or BLE changes
+    ParameterRegistry::getInstance().processPeriodicSave();
 
     // Update brewByTimeOnly based on scale connection status
     // If configured as false, use time-only mode when scale is disconnected
@@ -639,6 +655,17 @@ void loop() {
 
     // Update LED state continuously (needed for blinking during brewing)
     updateLEDState();
+
+    // Update web-accessible status from shot struct
+    isBrewing = shot.brewing;
+    shotTimer = shot.shotTimer;
+
+    // Send live status to connected web clients (every second)
+    static unsigned long lastStatusEvent = 0;
+    if (millis() - lastStatusEvent > 1000) {
+        lastStatusEvent = millis();
+        sendStatusEvent();
+    }
 
     // SHOT ANALYSIS  --------------------------------
 

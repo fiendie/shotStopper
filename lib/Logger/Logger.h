@@ -2,8 +2,6 @@
 
 #include <WiFiManager.h>
 
-#include <stdint.h>
-
 class Logger {
     public:
         enum class Level : int {
@@ -17,7 +15,7 @@ class Logger {
         };
 
         /**
-         * @brief Return singleton instance of the logger
+         * @brief Return a singleton instance of the logger
          * @return Logger instance
          */
         static Logger& getInstance() {
@@ -29,7 +27,7 @@ class Logger {
          *
          * @param port Port on which the logger should listen for client connections
          */
-        static void init(const uint16_t port);
+        static void init(uint16_t port);
 
         Logger(Logger const&) = delete;
         void operator=(Logger const&) = delete;
@@ -68,7 +66,7 @@ class Logger {
          * @param line The line number of the log message
          * @param logmsg Log message to be sent as payload
          */
-        void log(const Level level, const String& file, const __FlashStringHelper* function, uint32_t line, const char* logmsg);
+        void log(Level level, const String& file, const char* function, uint32_t line, const char* logmsg);
 
         /**
          * @brief Send a log message either via serial or serial-over-wifi
@@ -82,11 +80,12 @@ class Logger {
          * @param format Format string akin to printf
          * @param ... Parameter list
          */
-        void logf(const Level level, const String& file, const __FlashStringHelper* function, uint32_t line, const char* format, ...);
+        void logf(Level level, const String& file, const char* function, uint32_t line, const char* format, ...);
 
-        static void setLevel(Level level) {
+        static void setLevel(const Level level) {
             getInstance().level_ = level;
         }
+
         static Level getCurrentLevel() {
             return getInstance().level_;
         }
@@ -100,9 +99,9 @@ class Logger {
          *
          * @param port Port on which the logger should listen for client connections
          */
-        Logger(const uint16_t port = 23);
+        explicit Logger(uint16_t port = 23);
 
-        void current_time(char* timestamp);
+        static void current_time(char* timestamp);
 
         static String get_level_identifier(Level lvl);
 
@@ -131,10 +130,7 @@ class Logger {
 #define IFLOG(level) if (Logger::Level::level >= Logger::getCurrentLevel())
 
 #define LOG(level, ...)                                                                                                                                                                                                         \
-    if (Logger::Level::level >= Logger::getCurrentLevel()) Logger::getInstance().log(Logger::Level::level, __FILE_NAME__, FPSTR(__func__), __LINE__, __VA_ARGS__)
+    if (Logger::Level::level >= Logger::getCurrentLevel()) Logger::getInstance().log(Logger::Level::level, __FILE_NAME__, __FUNCTION__, __LINE__, __VA_ARGS__)
 
 #define LOGF(level, ...)                                                                                                                                                                                                        \
-    if (Logger::Level::level >= Logger::getCurrentLevel()) Logger::getInstance().logf(Logger::Level::level, __FILE_NAME__, FPSTR(__func__), __LINE__, __VA_ARGS__)
-
-// Some comment on __func__: this resides on flash storage, so we need to access it using FPSTR(). Copying it to string is
-// cumbersome, so passing through the pointer and creating the final object directly from the __FlashStringHelper pointer.
+    if (Logger::Level::level >= Logger::getCurrentLevel()) Logger::getInstance().logf(Logger::Level::level, __FILE_NAME__, __FUNCTION__, __LINE__, __VA_ARGS__)

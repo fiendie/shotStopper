@@ -1,0 +1,103 @@
+%HEADER%
+
+    <script type="module">
+        (window.appCreated ? Promise.resolve() : new Promise(resolve => window.addEventListener('appCreated', resolve)))
+            .then(() => vueApp.mount('#content'));
+    </script>
+
+    <style>
+        .status-value { font-size: 2rem; font-weight: bold; }
+        .status-label { font-size: 0.85rem; color: #6c757d; text-transform: uppercase; letter-spacing: 0.05em; }
+        .status-card { text-align: center; padding: 1.5rem 1rem; }
+        .brewing-active { animation: pulse 1.5s ease-in-out infinite; }
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.6; }
+        }
+    </style>
+
+    <div class="content-wrapper">
+        <div id="content" class="container my-4">
+
+            <!-- Brewing Banner -->
+            <div v-if="status.brewing" class="alert alert-success d-flex align-items-center mb-4 shadow-sm brewing-active" role="alert">
+                <i class="fa-solid fa-mug-hot fa-2x me-3"></i>
+                <div>
+                    <strong>Brewing in progress</strong>
+                    <span class="ms-2">{{ status.shotTimer.toFixed(1) }}s</span>
+                </div>
+            </div>
+
+            <!-- Live Status Cards -->
+            <div class="row row-cols-1 row-cols-md-3 g-4 mb-4">
+                <div class="col">
+                    <div class="card shadow-sm h-100">
+                        <div class="status-card">
+                            <div class="status-label">Current Weight</div>
+                            <div class="status-value">{{ status.currentWeight.toFixed(1) }}<small class="text-muted">g</small></div>
+                        </div>
+                    </div>
+                </div>
+                <div class="col">
+                    <div class="card shadow-sm h-100">
+                        <div class="status-card">
+                            <div class="status-label">Goal Weight</div>
+                            <div class="status-value">{{ status.goalWeight.toFixed(1) }}<small class="text-muted">g</small></div>
+                        </div>
+                    </div>
+                </div>
+                <div class="col">
+                    <div class="card shadow-sm h-100">
+                        <div class="status-card">
+                            <div class="status-label">Weight Offset</div>
+                            <div class="status-value">{{ status.weightOffset.toFixed(1) }}<small class="text-muted">g</small></div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Info Cards -->
+            <div class="row row-cols-1 row-cols-md-2 g-4 mb-4">
+                <div class="col">
+                    <div class="card shadow-sm h-100">
+                        <div class="card-body">
+                            <h6 class="card-title text-muted mb-3"><i class="fa-solid fa-info-circle me-1"></i> Device Info</h6>
+                            <table class="table table-sm table-borderless mb-0">
+                                <tr>
+                                    <td class="text-muted">Mode</td>
+                                    <td><span class="badge" :class="status.brewByTimeOnly ? 'bg-warning text-dark' : 'bg-primary'">
+                                        {{ status.brewByTimeOnly ? 'Time Only' : 'Weight + Time' }}
+                                    </span></td>
+                                </tr>
+                                <tr>
+                                    <td class="text-muted">Uptime</td>
+                                    <td>{{ formatUptime(status.uptime) }}</td>
+                                </tr>
+                            </table>
+                        </div>
+                    </div>
+                </div>
+                <div class="col">
+                    <div class="card shadow-sm h-100">
+                        <div class="card-body">
+                            <h6 class="card-title text-muted mb-3"><i class="fa-solid fa-link me-1"></i> Quick Links</h6>
+                            <div class="d-grid gap-2">
+                                <a href="/parameters.html" class="btn btn-outline-primary">
+                                    <i class="fa-solid fa-sliders me-1"></i> Settings
+                                </a>
+                                <a href="/system.html" class="btn btn-outline-secondary">
+                                    <i class="fa-solid fa-server me-1"></i> System
+                                </a>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+        </div>
+    </div>
+
+</div>
+
+</body>
+</html>

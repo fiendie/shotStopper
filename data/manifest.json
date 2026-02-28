@@ -1,0 +1,9 @@
+{
+    "short_name": "shotStopper",
+    "name": "shotStopper",
+    "id": "/",
+    "start_url": "/",
+    "display": "standalone",
+    "scope": "/",
+    "theme_color": "#6C757D"
+}

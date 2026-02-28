@@ -1,5 +1,4 @@
 #include <WiFi.h>
-#include <utility>
 
 #include "Logger.h"
 
@@ -20,7 +19,7 @@ void Logger::init(const uint16_t port) {
 
 bool Logger::begin() {
     if (WiFi.status() == WL_CONNECTED) {
-        Logger::getInstance().server_.begin();
+        getInstance().server_.begin();
     }
 
     // If the serial interface has not been started, start it now:
@@ -31,23 +30,22 @@ bool Logger::begin() {
 }
 
 bool Logger::update() {
-    if (Logger::getInstance().server_.hasClient()) {
+    if (getInstance().server_.hasClient()) {
         // If we are already connected to another client, then reject the new connection, otherwise accept the connection.
-        if (Logger::getInstance().client_.connected()) {
+        if (getInstance().client_.connected()) {
             LOG(WARNING, "Serial Server Connection rejected");
-            Logger::getInstance().server_.available().stop();
+            getInstance().server_.available().stop();
         }
         else {
             LOG(INFO, "Serial Server Connection accepted");
-            Logger::getInstance().client_ = Logger::getInstance().server_.available();
+            getInstance().client_ = getInstance().server_.available();
         }
     }
 
     // update if the loglevel has changed
-    Logger::Level level = static_cast<Logger::Level>(logLevel);
 
-    if (Logger::getCurrentLevel() != level) {
-        Logger::setLevel(level);
+    if (const auto level = static_cast<Level>(logLevel); getCurrentLevel() != level) {
+        setLevel(level);
         LOGF(INFO, "Log level changed to %s", Logger::get_level_identifier(level).c_str());
     }
 
@@ -55,10 +53,10 @@ bool Logger::update() {
 }
 
 uint16_t Logger::getPort() {
-    return Logger::getInstance().getPort();
+    return getInstance().port_;
 }
 
-void Logger::log(const Level level, const String& file, const __FlashStringHelper* function, uint32_t line, const char* logmsg) {
+void Logger::log(const Level level, const String& file, const char* function, const uint32_t line, const char* logmsg) {
     char time[12];
     current_time(time);
 
@@ -94,7 +92,7 @@ void Logger::log(const Level level, const String& file, const __FlashStringHelpe
     }
 }
 
-void Logger::logf(const Level level, const String& file, const __FlashStringHelper* function, uint32_t line, const char* format, ...) {
+void Logger::logf(const Level level, const String& file, const char* function, const uint32_t line, const char* format, ...) {
     // reimplement printf method so that we can take dynamic list of parameters as printf does
     // (we can't simply pass these on to existing printf methods it seems)
 
@@ -102,16 +100,12 @@ void Logger::logf(const Level level, const String& file, const __FlashStringHelp
     va_start(arg, format);
     char temp[64]; // allocate a temp buffer
     char* buffer = temp;
-    size_t len = vsnprintf(temp, sizeof(temp), format, arg);
+    const size_t len = vsnprintf(temp, sizeof(temp), format, arg);
     va_end(arg);
 
     // if temp buffer was too short, create new one with enough room (includes previous bytes)
     if (len > sizeof(temp) - 1) {
         buffer = new char[len + 1];
-
-        if (!buffer) {
-            return;
-        }
 
         va_start(arg, format);
         vsnprintf(buffer, len + 1, format, arg);
@@ -127,13 +121,12 @@ void Logger::logf(const Level level, const String& file, const __FlashStringHelp
 
 void Logger::current_time(char* timestamp) {
     time_t rawtime;
-    struct tm* timeinfo;
     time(&rawtime);
-    timeinfo = localtime(&rawtime);
+    const tm* timeinfo = localtime(&rawtime);
     snprintf(timestamp, 12, "[%02d:%02d:%02d] ", timeinfo->tm_hour, timeinfo->tm_min, timeinfo->tm_sec);
 }
 
-String Logger::get_level_identifier(Logger::Level lvl) {
+String Logger::get_level_identifier(const Level lvl) {
     switch (lvl) {
         case Level::TRACE:
             return "  TRACE";
