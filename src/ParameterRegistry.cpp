@@ -39,35 +39,35 @@ void ParameterRegistry::initialize(Config& config) {
 
     // --- Brew Section ---
 
-    addNumericConfigParam<double>(
+    addNumericConfigParam<float>(
         "brew.goal_weight",
         "Goal Weight (g)",
-        kDouble,
+        kFloat,
         sBrewSection,
         100,
-        nullptr,
+        &goalWeight,
         10.0, 100.0,
         "Target weight for the shot. The brew will stop once this weight minus the offset is reached."
     );
 
-    addNumericConfigParam<double>(
+    addNumericConfigParam<float>(
         "brew.weight_offset",
         "Weight Offset (g)",
-        kDouble,
+        kFloat,
         sBrewSection,
         101,
-        nullptr,
+        &weightOffset,
         0.0, 5.0,
         "Offset subtracted from the goal weight to account for drip after the pump stops. Automatically adjusted after each shot."
     );
 
-    addNumericConfigParam<double>(
+    addNumericConfigParam<float>(
         "brew.max_offset",
         "Max Offset (g)",
-        kDouble,
+        kFloat,
         sBrewSection,
         102,
-        nullptr,
+        &maxOffset,
         1.0, 10.0,
         "Maximum allowed offset correction. If the error exceeds this, the offset is not updated."
     );
@@ -83,24 +83,24 @@ void ParameterRegistry::initialize(Config& config) {
         "Duration of the output pulse used to stop the shot in momentary switch mode."
     );
 
-    addNumericConfigParam<double>(
+    addNumericConfigParam<float>(
         "brew.drip_delay",
         "Drip Delay (s)",
-        kDouble,
+        kFloat,
         sBrewSection,
         104,
-        nullptr,
+        &dripDelay,
         1.0, 10.0,
         "Time to wait after the shot ends before measuring the final weight for offset adjustment."
     );
 
-    addNumericConfigParam<double>(
+    addNumericConfigParam<float>(
         "brew.reed_switch_delay",
         "Reed Switch Delay (s)",
-        kDouble,
+        kFloat,
         sBrewSection,
         105,
-        nullptr,
+        &reedSwitchDelay,
         0.1, 5.0,
         "Delay after shot ends during which the reed switch reading is forced off to avoid false triggers."
     );
@@ -158,13 +158,13 @@ void ParameterRegistry::initialize(Config& config) {
         "Automatically tare the scale when a brew starts."
     );
 
-    addNumericConfigParam<double>(
+    addNumericConfigParam<float>(
         "scale.min_weight_for_prediction",
         "Min Weight for Prediction (g)",
-        kDouble,
+        kFloat,
         sScaleSection,
         201,
-        nullptr,
+        &minWeightForPrediction,
         0.0, 50.0,
         "Minimum weight before the end-time prediction algorithm activates."
     );

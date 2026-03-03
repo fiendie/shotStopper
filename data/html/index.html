@@ -42,7 +42,15 @@
                     <div class="card shadow-sm h-100">
                         <div class="status-card">
                             <div class="status-label">Goal Weight</div>
-                            <div class="status-value">{{ status.goalWeight.toFixed(1) }}<small class="text-muted">g</small></div>
+                            <div class="d-flex align-items-center justify-content-center gap-2">
+                                <button class="btn btn-outline-secondary btn-sm" @click="adjustGoalWeight(-0.5)" :disabled="status.goalWeight <= 10">
+                                    <i class="fa-solid fa-minus"></i>
+                                </button>
+                                <span class="status-value">{{ status.goalWeight.toFixed(1) }}<small class="text-muted">g</small></span>
+                                <button class="btn btn-outline-secondary btn-sm" @click="adjustGoalWeight(0.5)" :disabled="status.goalWeight >= 100">
+                                    <i class="fa-solid fa-plus"></i>
+                                </button>
+                            </div>
                         </div>
                     </div>
                 </div>
@@ -52,6 +60,22 @@
                             <div class="status-label">Weight Offset</div>
                             <div class="status-value">{{ status.weightOffset.toFixed(1) }}<small class="text-muted">g</small></div>
                         </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Flow Rate Chart -->
+            <div class="card shadow-sm mb-4">
+                <div class="card-body">
+                    <h6 class="card-title text-muted mb-3">
+                        <i class="fa-solid fa-chart-line me-1"></i>
+                        Shot Profile
+                        <span v-if="status.brewing" class="badge bg-success ms-2">Live</span>
+                    </h6>
+                    <div id="flow-chart"></div>
+                    <div v-if="!chartVisible" class="text-center text-muted py-4">
+                        <i class="fa-solid fa-mug-hot fa-2x mb-2 opacity-25"></i>
+                        <p class="mb-0">Waiting for brew data&hellip;</p>
                     </div>
                 </div>
             </div>

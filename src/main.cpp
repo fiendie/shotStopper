@@ -260,22 +260,14 @@ void setup() {
         // Continue with defaults that are already in Config
     }
 
-    // Load configuration values
-    hostName = config.get<String>("system.hostname");
-    goalWeight = static_cast<float>(config.get<double>("brew.goal_weight"));
-    weightOffset = static_cast<float>(config.get<double>("brew.weight_offset"));
-    maxOffset = static_cast<float>(config.get<double>("brew.max_offset"));
-    brewPulseDuration = config.get<int>("brew.pulse_duration_ms");
-    dripDelay = static_cast<float>(config.get<double>("brew.drip_delay"));
-    reedSwitchDelay = static_cast<float>(config.get<double>("brew.reed_switch_delay"));
-    minWeightForPrediction = static_cast<float>(config.get<double>("scale.min_weight_for_prediction"));
-    momentary = config.get<bool>("switch.momentary");
-    reedSwitch = config.get<bool>("switch.reedcontact");
-    autoTare = config.get<bool>("scale.auto_tare");
-    brewByTimeOnlyConfigured = config.get<bool>("brew.by_time_only");
+    // Initialize ParameterRegistry and sync all global variables from config
+    ParameterRegistry::getInstance().initialize(config);
+    ParameterRegistry::getInstance().syncGlobalVariables();
+
+    // Derived values not managed by ParameterRegistry
     brewByTimeOnly = brewByTimeOnlyConfigured; // Initial value, will be updated based on scale connection
 
-    // Load target time and shot duration limits
+    // Load target time and shot duration limits (stored as int, used as float)
     targetTime = static_cast<float>(config.get<int>("brew.target_time"));
     minShotDuration = static_cast<float>(config.get<int>("brew.min_shot_duration"));
     maxShotDuration = static_cast<float>(config.get<int>("brew.max_shot_duration"));
@@ -321,9 +313,6 @@ void setup() {
 
     LOG(INFO, "Bluetooth® device active, waiting for connections...");
 
-    // Initialize ParameterRegistry with the config system
-    ParameterRegistry::getInstance().initialize(config);
-    ParameterRegistry::getInstance().syncGlobalVariables();
 
     setupWiFi();
 
@@ -662,6 +651,7 @@ void loop() {
 
     // Send live status to connected web clients (every second)
     static unsigned long lastStatusEvent = 0;
+
     if (millis() - lastStatusEvent > 1000) {
         lastStatusEvent = millis();
         sendStatusEvent();
@@ -695,7 +685,8 @@ void loop() {
                 currentWeight, goalWeight, weightOffset);
 
             // Save to config system
-            config.set<double>("brew.weight_offset", weightOffset);
+            config.set<float>("brew.weight_offset", weightOffset);
+
             if (!config.save()) {
                 LOG(ERROR, "Failed to save config after offset update");
             }
@@ -728,7 +719,7 @@ void processPendingBLEWrites() {
         if (val != static_cast<uint8_t>(goalWeight)) {
             LOGF(INFO, "BLE: Goal weight updated from %.0f to %d", goalWeight, val);
             goalWeight = val;
-            config.set<double>("brew.goal_weight", goalWeight);
+            config.set<float>("brew.goal_weight", goalWeight);
             needsSave = true;
 
             if (pWeightCharacteristic) {
@@ -799,7 +790,7 @@ void processPendingBLEWrites() {
         if (const auto val = static_cast<float>(pendingWrite.dripDelayVal); val != dripDelay) {
             LOGF(INFO, "BLE: Drip delay updated from %.0f to %.0f", dripDelay, val);
             dripDelay = val;
-            config.set<double>("brew.drip_delay", dripDelay);
+            config.set<float>("brew.drip_delay", dripDelay);
             needsSave = true;
         }
     }

@@ -25,6 +25,7 @@ const vueApp = Vue.createApp({
                 freeHeap: 0,
                 uptime: 0
             },
+
             scaleConnected: false,
 
             // Config upload
@@ -35,7 +36,17 @@ const vueApp = Vue.createApp({
 
             // Factory reset
             factoryResetMessage: '',
-            factoryResetSuccess: false
+            factoryResetSuccess: false,
+
+            // Flow rate chart
+            chartData: {
+                time: [],       // seconds into shot
+                weight: [],     // cumulative weight (g)
+                flowRate: []    // g/s
+            },
+
+            wasBrewing: false,
+            flowChart: null
         }
     },
 
@@ -50,6 +61,13 @@ const vueApp = Vue.createApp({
         this.fetchStatus();
     },
 
+    beforeUnmount() {
+        if (this.flowChart) {
+            this.flowChart.destroy();
+            this.flowChart = null;
+        }
+    },
+
     methods: {
         // --- SSE for live data ---
         startSSE() {
@@ -59,6 +77,11 @@ const vueApp = Vue.createApp({
                 try {
                     const data = JSON.parse(event.data);
                     Object.assign(this.status, data);
+                    shotChart.update(data);
+
+                    if (!shotChart.instance && shotChart.hasData()) {
+                        shotChart.render(this.$nextTick.bind(this));
+                    }
                 } catch (e) {
                     console.error('SSE parse error:', e);
                 }
@@ -77,6 +100,22 @@ const vueApp = Vue.createApp({
             } catch (e) {
                 console.error('Status fetch error:', e);
             }
+        },
+
+        adjustGoalWeight(delta) {
+            const newVal = Math.round((this.status.goalWeight + delta) * 10) / 10;
+
+            if (newVal < 10 || newVal > 100) return;
+
+            // Optimistic UI update
+            this.status.goalWeight = newVal;
+
+            // Persist to config via /parameters POST
+            fetch('/parameters', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+                body: 'brew.goal_weight=' + encodeURIComponent(newVal)
+            }).catch(err => console.error('Failed to save goal weight:', err));
         },
 
         // --- Parameter management ---
@@ -122,6 +161,7 @@ const vueApp = Vue.createApp({
             const displayedSections = this.parameterSectionsComputed;
 
             const displayedParameters = [];
+
             Object.values(displayedSections).forEach(section => {
                 Object.values(section).forEach(group => {
                     group.forEach(param => {
@@ -182,9 +222,11 @@ const vueApp = Vue.createApp({
                     .then(response => response.json())
                     .then(data => {
                         let helpText = data['helpText'] || '';
+
                         if (requiresReboot) {
                             helpText += '<br><strong>Changes require a reboot</strong>';
                         }
+
                         this.parametersHelpTexts[paramName] = helpText;
                     });
             }
@@ -228,6 +270,7 @@ const vueApp = Vue.createApp({
         // --- System actions ---
         async confirmReset() {
             if (!window.confirm("Reset WiFi settings? This will erase saved credentials and restart the device.")) return;
+
             try {
                 const response = await fetch("/wifireset", { method: "POST" });
                 const text = await response.text();
@@ -245,8 +288,10 @@ const vueApp = Vue.createApp({
 
         async confirmFactoryReset() {
             if (!window.confirm("Reset config to defaults and restart? This can't be undone.")) return;
+
             this.factoryResetMessage = 'Factory reset initiated. Device is restarting...';
             this.factoryResetSuccess = true;
+
             try {
                 await fetch("/factoryreset", { method: "POST" });
             } catch (err) {
@@ -281,12 +326,14 @@ const vueApp = Vue.createApp({
                     this.selectedFile = null;
                     return;
                 }
+
                 if (file.size > 50 * 1024) {
                     this.uploadMessage = 'File too large. Maximum 50KB.';
                     this.uploadSuccess = false;
                     this.selectedFile = null;
                     return;
                 }
+
                 this.uploadMessage = `Selected: ${file.name} (${(file.size / 1024).toFixed(1)} KB)`;
                 this.uploadSuccess = true;
             }
@@ -309,7 +356,14 @@ const vueApp = Vue.createApp({
                 const response = await fetch('/upload/config', { method: 'POST', body: formData });
 
                 let result;
-                try { result = await response.json(); } catch (e) { result = { success: response.ok }; }
+
+                try {
+                    result = await response.json();
+                } catch (e) {
+                    result = {
+                        success: response.ok
+                    };
+                }
 
                 this.uploadSuccess = result.success;
                 this.uploadMessage = result.message || (result.success ? 'Upload successful!' : 'Upload failed.');
@@ -318,7 +372,11 @@ const vueApp = Vue.createApp({
                 this.uploadMessage += ' Restarting device...';
                 await new Promise(r => setTimeout(r, 1000));
 
-                try { await this.restartMachine(); } catch (e) { /* restarting */ }
+                try {
+                    await this.restartMachine();
+                } catch (e) {
+                    /* restarting */
+                }
 
             } catch (error) {
                 this.uploadMessage = 'Upload failed. Please try again.';
@@ -335,6 +393,7 @@ const vueApp = Vue.createApp({
             const s = seconds % 60;
             if (h > 0) return `${h}h ${m}m`;
             if (m > 0) return `${m}m ${s}s`;
+
             return `${s}s`;
         }
     },
@@ -343,10 +402,19 @@ const vueApp = Vue.createApp({
         parameterSectionsComputed() {
             const sections = groupBy(this.parameters.filter(p => p.show), "section");
             const result = {};
+
             Object.keys(sections).forEach(key => {
                 result[key] = groupBy(sections[key], p => this.getGroupFromPosition(p.position));
             });
+
             return result;
+        },
+
+        chartVisible() {
+            // Touch a reactive property so Vue re-evaluates when status changes
+            void this.status.shotTimer;
+
+            return shotChart.hasData();
         }
     }
 });
@@ -359,7 +427,9 @@ function groupBy(array, key) {
     const result = {};
     array.forEach(item => {
         const k = typeof key === 'function' ? key(item) : item[key];
+
         if (!result[k]) result[k] = [];
+
         result[k].push(item);
     });
     return result;
@@ -371,6 +441,7 @@ document.querySelector('body').addEventListener('click', function (e) {
         if (e.target.parentElement && e.target.parentElement.getAttribute("data-bs-toggle") !== "popover") {
             document.querySelectorAll('[data-bs-toggle="popover"]').forEach(el => {
                 const popover = bootstrap.Popover.getInstance(el);
+
                 if (popover) popover.hide();
             });
         } else {
