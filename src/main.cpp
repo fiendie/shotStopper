@@ -30,6 +30,12 @@
 #include "ParameterRegistry.h"
 #include "embeddedWebserver.h"
 
+// Two-level stringification macro to expand build flags before quoting
+#define SS_STRINGIFY(x) #x
+#define SS_STR(x) SS_STRINGIFY(x)
+
+extern const char sysVersion[] = SS_STR(AUTO_VERSION);
+
 WiFiManager wifiManager;
 
 String hostName;
@@ -312,7 +318,6 @@ void setup() {
     setupBLEServer();
 
     LOG(INFO, "Bluetooth® device active, waiting for connections...");
-
 
     setupWiFi();
 

@@ -22,6 +22,8 @@ extern bool autoTare;
 extern bool brewByTimeOnly;
 extern bool brewByTimeOnlyConfigured;
 extern String hostName;
+extern const char sysVersion[64];
+
 
 static constexpr const char* const logLevels[] = {"TRACE", "DEBUG", "INFO", "WARNING", "ERROR", "FATAL", "SILENT"};
 
@@ -212,6 +214,21 @@ void ParameterRegistry::initialize(Config& config) {
         logLevels,
         7,
         "Set the logging verbosity level."
+    );
+
+    addParam(
+        std::make_shared<Parameter>(
+            "VERSION",
+            "Version",
+            kCString, sOtherSection,
+            999,
+            [] { return sysVersion; },
+            nullptr,
+            64,
+            false, "",
+            [] { return false; },
+            nullptr
+        )
     );
 
     // Sort by position

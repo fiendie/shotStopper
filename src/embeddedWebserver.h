@@ -29,6 +29,7 @@ extern bool isBrewing;
 extern float shotTimer;
 extern bool brewByTimeOnly;
 extern Config config;
+extern const char sysVersion[];
 
 // Forward declaration for WiFi reset
 class WiFiManager;
@@ -47,7 +48,7 @@ inline String staticProcessor(const String& var) {
         return content;
     }
 
-    return String();
+    return {};
 }
 
 // rounds a number to 2 decimal places
@@ -308,6 +309,9 @@ inline void serverSetup() {
         response->print(ESP.getFreeHeap());
         response->print(",\"uptime\":");
         response->print(millis() / 1000);
+        response->print(",\"version\":\"");
+        response->print(sysVersion);
+        response->print('"');
         response->print('}');
         request->send(response);
     });

@@ -23,7 +23,8 @@ const vueApp = Vue.createApp({
                 shotTimer: 0,
                 brewByTimeOnly: false,
                 freeHeap: 0,
-                uptime: 0
+                uptime: 0,
+                version: ''
             },
 
             scaleConnected: false,
