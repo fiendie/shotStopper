@@ -20,7 +20,6 @@ TARGETS = [
 # Common flash addresses (from partitions_4M.csv)
 COMMON_FILES = {
     "partitions.bin": "0x8000",
-    "boot_app0.bin":  "0xe000",
     "firmware.bin":   "0x10000",
     "littlefs.bin":   "0x3D0000",
 }
